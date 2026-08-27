@@ -88,3 +88,73 @@ export const skillService = {
     return seed.seedSkills.filter((s) => s.parentId === parentId);
   },
 };
+
+export const questionService = {
+  async getQuestions(): Promise<Question[]> {
+    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
+    return seed.seedQuestions;
+  },
+  async getQuestionsForSkill(skillId: string): Promise<Question[]> {
+    return seed.seedQuestions.filter((q) => q.relatedSkillIds?.includes(skillId));
+  },
+  async getQuestionsForClaim(claimId: string): Promise<Question[]> {
+    return seed.seedQuestions.filter((q) => q.relatedClaimId === claimId);
+  },
+};
+
+export const flashcardService = {
+  async getFlashcards(): Promise<Flashcard[]> {
+    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
+    return seed.seedFlashcards;
+  },
+  async getFlashcardsForSkill(skillId: string): Promise<Flashcard[]> {
+    return seed.seedFlashcards.filter((f) => f.skillId === skillId);
+  },
+};
+
+export const resourceService = {
+  async getResources(): Promise<LearningResource[]> {
+    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
+    return seed.seedResources;
+  },
+  async getResourcesForSkill(skillId: string): Promise<LearningResource[]> {
+    return seed.seedResources.filter((r) => r.skillId === skillId);
+  },
+};
+
+export const learningService = {
+  async getTopics(): Promise<LearningTopic[]> {
+    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
+    return seed.seedLearningTopics;
+  },
+};
+
+export const assessmentService = {
+  async evaluate(_answer: string, _questionId: string): Promise<AnswerEvaluation> {
+    if (!API_BASE_CONFIGURED && !USE_MOCK) return seed.seedEvaluation as AnswerEvaluation;
+    return seed.seedEvaluation as AnswerEvaluation;
+  },
+};
+
+export const progressService = {
+  async getHistory(): Promise<ProgressSnapshot[]> {
+    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
+    return seed.seedProgress;
+  },
+  async getStats(): Promise<ProgressStats> {
+    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
+    return seed.seedStats;
+  },
+};
+
+export const jobMatchService = {
+  async analyze(_jobDescription: string): Promise<JobMatchResult> {
+    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
+    return {
+      score: 78,
+      matched: ['Java', 'Spring Boot', 'AWS', 'REST APIs', 'Docker'],
+      partial: ['System Design', 'Kubernetes'],
+      missing: ['TypeScript', 'React'],
+    } as unknown as JobMatchResult;
+  },
+};
