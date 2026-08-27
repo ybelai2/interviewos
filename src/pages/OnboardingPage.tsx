@@ -4,6 +4,7 @@ import { Link, useRouter } from '@/router';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { ProgressSteps, useAnimatedSteps } from '@/components/ui/ProgressSteps';
+import { resumeService } from '@/services';
 
 type Phase = 'upload' | 'analyzing' | 'done';
 
@@ -20,6 +21,7 @@ export function OnboardingPage() {
   const { navigate } = useRouter();
   const [phase, setPhase] = useState<Phase>('upload');
   const [fileName, setFileName] = useState('');
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
 
   const { currentStep, isDone } = useAnimatedSteps(
@@ -27,10 +29,29 @@ export function OnboardingPage() {
     850
   );
 
-  const handleFile = useCallback((name: string) => {
-    setFileName(name);
+  const handleFile = useCallback(async (file: File) => {
+    setFileName(file.name);
     setPhase('analyzing');
-  }, []);
+    try {
+      const stored = localStorage.getItem('ios-user');
+      const userId = stored ? (JSON.parse(stored) as any).id : 'local-user';
+      const res = await resumeService.uploadResume(file, userId, (p) => setUploadProgress(p));
+      // uploaded and analyzed; show success then navigate
+      setTimeout(() => navigate('/app/resume'), 600);
+    } catch (err: any) {
+      console.error('upload failed', err);
+      setPhase('upload');
+      setUploadProgress(null);
+      // Provide a user-friendly error modal or message
+      const message = err?.error || err?.message || 'Upload failed';
+      // If backend is not configured, give explicit instructions
+      if (message.includes('Backend not configured') || message.includes('OPENAI_API_KEY not configured') || message.includes('Database not configured')) {
+        alert(message + '\n\nThe application backend is not fully configured. Please check your environment variables or contact the site administrator.');
+      } else {
+        alert(message);
+      }
+    }
+  }, [navigate]);
 
   // When analysis completes, navigate to resume analysis page
   if (phase === 'analyzing' && isDone && currentStep >= analysisSteps.length) {
@@ -41,7 +62,7 @@ export function OnboardingPage() {
     e.preventDefault();
     setDragging(false);
     const file = e.dataTransfer.files?.[0];
-    if (file) handleFile(file.name);
+    if (file) handleFile(file);
   };
 
   return (
@@ -92,7 +113,7 @@ export function OnboardingPage() {
                       className="hidden"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
-                        if (f) handleFile(f.name);
+                        if (f) handleFile(f);
                       }}
                     />
                     <Button variant="outline" size="sm" asChild>
@@ -133,6 +154,9 @@ export function OnboardingPage() {
 
               <Card className="p-6">
                 <ProgressSteps steps={analysisSteps} currentStep={currentStep} />
+                {uploadProgress !== null && (
+                  <div className="mt-4 text-sm text-ink-muted">Upload progress: {uploadProgress}%</div>
+                )}
               </Card>
             </div>
           )}
