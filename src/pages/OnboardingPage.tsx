@@ -34,8 +34,14 @@ export function OnboardingPage() {
     setPhase('analyzing');
     try {
       const stored = localStorage.getItem('ios-user');
-      const userId = stored ? (JSON.parse(stored) as any).id : 'local-user';
-      const res = await resumeService.uploadResume(file, userId, (p) => setUploadProgress(p));
+      const parsed = stored ? JSON.parse(stored) : null;
+
+      // Attempt to grab a real token, fallback to the mock ID for local testing
+      const token = parsed?.accessToken || parsed?.token || parsed?.supabaseToken || parsed?.id || 'local-user';
+      console.debug('Derived token for upload:', !!token, token ? token.substring(0, 8) + '...' : null);
+
+      const res = await resumeService.uploadResume(file, token, (p) => setUploadProgress(p));
+
       // uploaded and analyzed; show success then navigate
       setTimeout(() => navigate('/app/resume'), 600);
     } catch (err: any) {
