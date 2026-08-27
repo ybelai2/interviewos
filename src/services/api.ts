@@ -1,42 +1,60 @@
-// Simple API client for resume upload and analysis
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000';
+// Frontend API client adapted for signed uploads and serverless endpoints
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
-export async function uploadResume(file: File, userId: string, onProgress?: (p: number) => void) {
-  const form = new FormData();
-  form.append('file', file);
-  form.append('userId', userId);
-
-  return new Promise<any>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE}/upload-resume`, true);
-    xhr.onreadystatechange = () => {
-      if (xhr.readyState === 4) {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            resolve(JSON.parse(xhr.responseText));
-          } catch (err) {
-            resolve(xhr.responseText);
-          }
-        } else {
-          try {
-            reject(JSON.parse(xhr.responseText));
-          } catch (err) {
-            reject({ error: 'Upload failed' });
-          }
-        }
-      }
-    };
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
-    };
-    xhr.send(form);
-  });
+async function jsonFetch(url: string, opts: any = {}) {
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  try { return JSON.parse(text); } catch (e) { return text; }
 }
 
-export async function getAnalysis(resumeId: string) {
-  const res = await fetch(`${API_BASE}/resumes/${resumeId}/analysis`);
-  if (!res.ok) throw new Error('Failed to fetch analysis');
+export async function requestUploadSigned(token: string, filename: string, contentType: string, size: number) {
+  const res = await fetch(`${API_BASE}/api/resume/upload-sign`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ filename, contentType, size }),
+  });
+  if (!res.ok) throw await res.json();
+  return res.json();
+}
+
+export async function uploadToSignedUrl(uploadUrl: string, file: File) {
+  const res = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': file.type,
+    },
+    body: file,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error('Upload failed: ' + text);
+  }
+  return true;
+}
+
+export async function requestAnalyze(token: string, resumeId: string, storagePath: string) {
+  const res = await fetch(`${API_BASE}/api/resume/analyze`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ resumeId, storagePath }),
+  });
+  if (!res.ok) throw await res.json();
+  return res.json();
+}
+
+export async function getAnalysis(token: string, resumeId: string) {
+  const res = await fetch(`${API_BASE}/api/resume/${resumeId}/analysis`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) throw await res.json();
   return res.json();
 }
