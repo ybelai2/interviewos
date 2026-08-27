@@ -1,38 +1,30 @@
-import type {
-  Skill,
-  ResumeClaim,
-  Project,
-  Question,
-  Flashcard,
-  LearningResource,
-  LearningTopic,
-  ProgressSnapshot,
-  ProgressStats,
-  AnswerEvaluation,
-  JobMatchResult,
-} from '@/types';
 import * as seed from '@/data/seed';
 import { requestUploadSigned, uploadToSignedUrl, requestAnalyze, getAnalysis as apiGetAnalysis } from './api';
 
 const USE_MOCK = (import.meta.env.VITE_USE_MOCK_DATA === 'true');
 const API_BASE_CONFIGURED = !!import.meta.env.VITE_API_BASE_URL;
 
+if (!API_BASE_CONFIGURED && !USE_MOCK) {
+  console.warn('VITE_API_BASE_URL is not set and VITE_USE_MOCK_DATA is not true. The app will not show mocked data and requests to backend will fail.');
+}
+
 function deriveToken(maybe?: string | null): string | null {
-  // If caller passed a token (JWT-like), use it
-  if (maybe && typeof maybe === 'string' && maybe.split('.').length === 3) return maybe;
-  // Try reading common token locations from localStorage at runtime
+  // If caller passed a full token, use it. We accept JWT-like strings (3 segments) or any non-empty string.
+  if (maybe && typeof maybe === 'string') {
+    return maybe;
+  }
+
   if (typeof window !== 'undefined') {
     try {
       const raw = localStorage.getItem('ios-user');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        // common token property names
-        return parsed?.accessToken || parsed?.token || parsed?.authToken || parsed?.supabaseToken || null;
-      }
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed?.accessToken || parsed?.token || parsed?.authToken || parsed?.supabaseToken || null;
     } catch (e) {
-      // ignore
+      return null;
     }
   }
+
   return null;
 }
 
@@ -45,57 +37,50 @@ export const resumeService = {
     // TODO: implement real profile endpoint
     return seed.resumeProfile;
   },
+
   /**
-   * uploadResume accepts either an auth token (preferred) or a userId when running in mock/local mode.
-   * For production it will attempt to derive a token from the provided second argument or from localStorage.
+   * uploadResume(file, userOrToken?, onProgress?)
+   * - Accepts either an auth token or a user id. If a token is not provided the service will
+   *   attempt to derive one from localStorage (ios-user). When running with USE_MOCK, returns seed data.
    */
-  async uploadResume(file: File, userOrToken?: string, onProgress?: (p: number) => void) {
+  async uploadResume(file: File, userOrToken?: string | null, onProgress?: (p: number) => void) {
     if (!API_BASE_CONFIGURED) {
-      if (USE_MOCK) return seed.resumeProfile; // preserved mock behavior
+      if (USE_MOCK) {
+        // Simulate successful upload/analysis in mock mode
+        return { analysis: null };
+      }
       throw new Error('Backend not configured (VITE_API_BASE_URL)');
     }
 
-    // Determine an auth token for server endpoints. Prefer an explicit token, else try to derive it from localStorage.
     const token = deriveToken(userOrToken ?? null);
     if (!token) {
       throw new Error('Missing authentication token. Please sign in before uploading a resume.');
     }
 
-    // 1) request signed upload URL
+    // 1) request signed upload URL from backend
     const signed = await requestUploadSigned(token, file.name, file.type, file.size);
-    // API may return different shapes; support common fields
-    const resumeId = signed?.resumeId || signed?.id || signed?.resume_id;
-    const uploadUrl = signed?.uploadUrl || signed?.upload_url || signed?.url;
-    const storagePath = signed?.storagePath || signed?.storage_path || signed?.path;
+    // Expecting { resumeId, uploadUrl, storagePath }
+    const { resumeId, uploadUrl, storagePath } = signed as any;
 
-    if (!resumeId || !uploadUrl || !storagePath) {
-      throw new Error('Invalid signed upload response from server');
-    }
-
-    // 2) upload directly to storage
+    // 2) upload file to signed URL; uploadToSignedUrl throws on failure
     await uploadToSignedUrl(uploadUrl, file);
 
-    // 3) trigger analysis
+    // 3) request the backend to analyze uploaded resume
     const analysis = await requestAnalyze(token, resumeId, storagePath);
-    // Optionally report progress via onProgress hook (upload complete -> 100)
-    try {
-      onProgress?.(100);
-    } catch (e) {
-      // ignore progress errors
-    }
-
     return analysis;
   },
-  async getAnalysis(resumeId: string, token?: string) {
+
+  async getAnalysis(resumeId: string, userOrToken?: string | null) {
     if (!API_BASE_CONFIGURED) {
       if (USE_MOCK) return { analysis: null };
       throw new Error('Backend not configured (VITE_API_BASE_URL)');
     }
-    const t = token ?? deriveToken();
-    if (!t) throw new Error('Missing authentication token.');
-    return apiGetAnalysis(t, resumeId);
+    const token = deriveToken(userOrToken ?? null);
+    if (!token) throw new Error('Missing authentication token.');
+    return apiGetAnalysis(token, resumeId);
   },
-  async getProjects(): Promise<Project[]> {
+
+  async getProjects() {
     if (!API_BASE_CONFIGURED) {
       if (USE_MOCK) return seed.seedProjects;
       throw new Error('Backend not configured (VITE_API_BASE_URL)');
@@ -103,14 +88,16 @@ export const resumeService = {
     // placeholder until real endpoint
     return seed.seedProjects;
   },
-  async getClaims(): Promise<ResumeClaim[]> {
+
+  async getClaims() {
     if (!API_BASE_CONFIGURED) {
       if (USE_MOCK) return seed.seedClaims;
       throw new Error('Backend not configured (VITE_API_BASE_URL)');
     }
     return seed.seedClaims;
   },
-  async getTechnologies(): Promise<string[]> {
+
+  async getTechnologies() {
     if (!API_BASE_CONFIGURED) {
       if (USE_MOCK) return seed.seedSkills.map((s) => s.name);
       throw new Error('Backend not configured (VITE_API_BASE_URL)');
@@ -120,87 +107,26 @@ export const resumeService = {
 };
 
 export const skillService = {
-  async getSkills(): Promise<Skill[]> {
-    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
-    return seed.seedSkills;
-  },
-  async getSkill(id: string): Promise<Skill | undefined> {
-    return seed.seedSkills.find((s) => s.id === id);
-  },
-  async getRoots(): Promise<Skill[]> {
-    return seed.seedSkills.filter((s) => s.parentId === null);
-  },
-  async getChildren(parentId: string): Promise<Skill[]> {
-    return seed.seedSkills.filter((s) => s.parentId === parentId);
-  },
+  async getSkills() { if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured'); return seed.seedSkills; },
+  async getSkill(id: string) { return seed.seedSkills.find((s) => s.id === id); },
+  async getRoots() { return seed.seedSkills.filter((s) => s.parentId === null); },
+  async getChildren(parentId: string) { return seed.seedSkills.filter((s) => s.parentId === parentId); },
 };
 
 export const questionService = {
-  async getQuestions(): Promise<Question[]> {
-    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
-    return seed.seedQuestions;
-  },
-  async getQuestionsForSkill(skillId: string): Promise<Question[]> {
-    return seed.seedQuestions.filter((q) => q.relatedSkillIds?.includes(skillId));
-  },
-  async getQuestionsForClaim(claimId: string): Promise<Question[]> {
-    return seed.seedQuestions.filter((q) => q.relatedClaimId === claimId);
-  },
+  async getQuestions() { return seed.seedQuestions; },
+  async getQuestionsForSkill(skillId: string) { return seed.seedQuestions.filter((q) => (q.relatedSkillIds || []).includes(skillId)); },
+  async getQuestionsForClaim(claimId: string) { return seed.seedQuestions.filter((q) => q.relatedClaimId === claimId); },
 };
 
-export const flashcardService = {
-  async getFlashcards(): Promise<Flashcard[]> {
-    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
-    return seed.seedFlashcards;
-  },
-  async getFlashcardsForSkill(skillId: string): Promise<Flashcard[]> {
-    return seed.seedFlashcards.filter((f) => f.skillId === skillId);
-  },
-};
+export const flashcardService = { async getFlashcards() { return seed.seedFlashcards; }, async getFlashcardsForSkill(skillId: string) { return seed.seedFlashcards.filter((f) => f.skillId === skillId); } };
 
-export const resourceService = {
-  async getResources(): Promise<LearningResource[]> {
-    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
-    return seed.seedResources;
-  },
-  async getResourcesForSkill(skillId: string): Promise<LearningResource[]> {
-    return seed.seedResources.filter((r) => r.skillId === skillId);
-  },
-};
+export const resourceService = { async getResources() { return seed.seedResources; }, async getResourcesForSkill(skillId: string) { return seed.seedResources.filter((r) => r.skillId === skillId); } };
 
-export const learningService = {
-  async getTopics(): Promise<LearningTopic[]> {
-    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
-    return seed.seedLearningTopics;
-  },
-};
+export const learningService = { async getTopics() { return seed.seedLearningTopics; } };
 
-export const assessmentService = {
-  async evaluate(_answer: string, _questionId: string): Promise<AnswerEvaluation> {
-    if (!API_BASE_CONFIGURED && !USE_MOCK) return seed.seedEvaluation as AnswerEvaluation;
-    return seed.seedEvaluation as AnswerEvaluation;
-  },
-};
+export const assessmentService = { async evaluate(_answer: string, _questionId: string) { return seed.seedEvaluation; } };
 
-export const progressService = {
-  async getHistory(): Promise<ProgressSnapshot[]> {
-    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
-    return seed.seedProgress;
-  },
-  async getStats(): Promise<ProgressStats> {
-    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
-    return seed.seedStats;
-  },
-};
+export const progressService = { async getHistory() { return seed.seedProgress; }, async getStats() { return seed.seedStats; } };
 
-export const jobMatchService = {
-  async analyze(_jobDescription: string): Promise<JobMatchResult> {
-    if (!API_BASE_CONFIGURED && !USE_MOCK) throw new Error('Backend not configured');
-    return {
-      score: 78,
-      matched: ['Java', 'Spring Boot', 'AWS', 'REST APIs', 'Docker'],
-      partial: ['System Design', 'Kubernetes'],
-      missing: ['TypeScript', 'React'],
-    } as unknown as JobMatchResult;
-  },
-};
+export const jobMatchService = { async analyze(_jobDescription: string) { return { score: 78, matched: ['Java','Spring Boot','AWS','REST APIs','Docker'], partial: ['System Design','Kubernetes'], missing: ['TypeScript','React'] }; } };
