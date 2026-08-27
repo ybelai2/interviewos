@@ -17,6 +17,25 @@ import { requestUploadSigned, uploadToSignedUrl, requestAnalyze, getAnalysis as 
 const USE_MOCK = (import.meta.env.VITE_USE_MOCK_DATA === 'true');
 const API_BASE_CONFIGURED = !!import.meta.env.VITE_API_BASE_URL;
 
+function deriveToken(maybe?: string | null): string | null {
+  // If caller passed a token (JWT-like), use it
+  if (maybe && typeof maybe === 'string' && maybe.split('.').length === 3) return maybe;
+  // Try reading common token locations from localStorage at runtime
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('ios-user');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // common token property names
+        return parsed?.accessToken || parsed?.token || parsed?.authToken || parsed?.supabaseToken || null;
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+  return null;
+}
+
 export const resumeService = {
   async getProfile() {
     if (!API_BASE_CONFIGURED) {
@@ -26,28 +45,55 @@ export const resumeService = {
     // TODO: implement real profile endpoint
     return seed.resumeProfile;
   },
-  async uploadResume(file: File, token: string, onProgress?: (p: number) => void) {
+  /**
+   * uploadResume accepts either an auth token (preferred) or a userId when running in mock/local mode.
+   * For production it will attempt to derive a token from the provided second argument or from localStorage.
+   */
+  async uploadResume(file: File, userOrToken?: string, onProgress?: (p: number) => void) {
     if (!API_BASE_CONFIGURED) {
-      if (USE_MOCK) throw new Error('Mock upload not implemented');
+      if (USE_MOCK) return seed.resumeProfile; // preserved mock behavior
       throw new Error('Backend not configured (VITE_API_BASE_URL)');
     }
 
+    // Determine an auth token for server endpoints. Prefer an explicit token, else try to derive it from localStorage.
+    const token = deriveToken(userOrToken ?? null);
+    if (!token) {
+      throw new Error('Missing authentication token. Please sign in before uploading a resume.');
+    }
+
     // 1) request signed upload URL
-    const { resumeId, uploadUrl, storagePath } = await requestUploadSigned(token, file.name, file.type, file.size);
+    const signed = await requestUploadSigned(token, file.name, file.type, file.size);
+    // API may return different shapes; support common fields
+    const resumeId = signed?.resumeId || signed?.id || signed?.resume_id;
+    const uploadUrl = signed?.uploadUrl || signed?.upload_url || signed?.url;
+    const storagePath = signed?.storagePath || signed?.storage_path || signed?.path;
+
+    if (!resumeId || !uploadUrl || !storagePath) {
+      throw new Error('Invalid signed upload response from server');
+    }
 
     // 2) upload directly to storage
     await uploadToSignedUrl(uploadUrl, file);
 
     // 3) trigger analysis
     const analysis = await requestAnalyze(token, resumeId, storagePath);
+    // Optionally report progress via onProgress hook (upload complete -> 100)
+    try {
+      onProgress?.(100);
+    } catch (e) {
+      // ignore progress errors
+    }
+
     return analysis;
   },
-  async getAnalysis(resumeId: string, token: string) {
+  async getAnalysis(resumeId: string, token?: string) {
     if (!API_BASE_CONFIGURED) {
       if (USE_MOCK) return { analysis: null };
       throw new Error('Backend not configured (VITE_API_BASE_URL)');
     }
-    return apiGetAnalysis(token, resumeId);
+    const t = token ?? deriveToken();
+    if (!t) throw new Error('Missing authentication token.');
+    return apiGetAnalysis(t, resumeId);
   },
   async getProjects(): Promise<Project[]> {
     if (!API_BASE_CONFIGURED) {
