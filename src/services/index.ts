@@ -12,14 +12,23 @@ import type {
   JobMatchResult,
 } from '@/types';
 import * as seed from '@/data/seed';
+import { uploadResume as apiUploadResume, getAnalysis as apiGetAnalysis } from './api';
 
-// Service interfaces. Mock implementations return seed data.
-// Real implementations can be swapped in by replacing these functions
-// with API calls (e.g. to Supabase or an AI backend) without changing callers.
+// Service interfaces. If VITE_API_BASE_URL is set we call the backend, otherwise fallback to seed data.
 
 export const resumeService = {
   async getProfile() {
+    if (!import.meta.env.VITE_API_BASE_URL) return seed.resumeProfile;
+    // For now, until we implement a profile endpoint, return seed as placeholder
     return seed.resumeProfile;
+  },
+  async uploadResume(file: File, userId: string, onProgress?: (p: number) => void) {
+    if (!import.meta.env.VITE_API_BASE_URL) throw new Error('API not configured');
+    return apiUploadResume(file, userId, onProgress);
+  },
+  async getAnalysis(resumeId: string) {
+    if (!import.meta.env.VITE_API_BASE_URL) return { analysis: null };
+    return apiGetAnalysis(resumeId);
   },
   async getProjects(): Promise<Project[]> {
     return seed.seedProjects;
@@ -28,19 +37,7 @@ export const resumeService = {
     return seed.seedClaims;
   },
   async getTechnologies(): Promise<string[]> {
-    return [
-      'Java',
-      'Spring Boot',
-      'Python',
-      'React',
-      'TypeScript',
-      'AWS',
-      'Docker',
-      'PostgreSQL',
-      'MongoDB',
-      'GitHub Actions',
-      'Gemini',
-    ];
+    return seed.seedSkills.map((s) => s.name);
   },
 };
 
