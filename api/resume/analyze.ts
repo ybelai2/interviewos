@@ -2,10 +2,6 @@ import { verifySupabaseAccessToken, getSupabaseServerClient } from '../_utils/su
 import { analyzeResumeWithAI } from '../_utils/ai';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
-import { Pool } from 'pg';
-
-const DATABASE_URL = process.env.DATABASE_URL || '';
-const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL }) : null;
 
 export default async function (req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -32,12 +28,19 @@ export default async function (req: any, res: any) {
     // Determine extraction by extension
     const lower = storagePath.toLowerCase();
     let text = '';
-    if (lower.endsWith('.pdf')) {
-      const parsed = await pdfParse(buffer);
-      text = parsed.text || '';
-    } else if (lower.endsWith('.docx')) {
-      const result = await mammoth.extractRawText({ buffer });
-      text = result.value || '';
+    try {
+      if (lower.endsWith('.pdf')) {
+        const parsed = await pdfParse(buffer as Buffer);
+        text = parsed.text || '';
+      } else if (lower.endsWith('.docx')) {
+        const result = await mammoth.extractRawText({ buffer });
+        text = result.value || '';
+      } else {
+        return res.status(400).json({ error: 'Unsupported file type' });
+      }
+    } catch (err: any) {
+      console.error('Extraction error', err?.message || err);
+      return res.status(400).json({ error: 'Failed to extract text from document' });
     }
 
     if (!text || text.trim().length < 10) {
@@ -52,30 +55,32 @@ export default async function (req: any, res: any) {
       return res.status(502).json({ error: 'AI analysis failed: ' + (err?.message || 'unknown') });
     }
 
-    // Persist analysis to Postgres
-    if (!pool) return res.status(500).json({ error: 'Database not configured' });
+    // Persist analysis using Supabase service client
     try {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        // Ensure resume exists and belongs to user
-        const r = await client.query('SELECT id, user_id FROM resumes WHERE id=$1', [resumeId]);
-        if (r.rowCount === 0) {
-          await client.query('ROLLBACK');
-          return res.status(404).json({ error: 'Resume not found' });
-        }
-        if (r.rows[0].user_id !== user.id) {
-          await client.query('ROLLBACK');
-          return res.status(403).json({ error: 'Unauthorized' });
-        }
-        const insert = await client.query('INSERT INTO resume_analyses (resume_id, analysis, created_at) VALUES ($1,$2,now()) RETURNING id', [resumeId, analysis]);
-        await client.query("UPDATE resumes SET status='analyzed' WHERE id=$1", [resumeId]);
-        await client.query('COMMIT');
-        const analysisId = insert.rows[0].id;
-        res.json({ resumeId, analysisId, analysis });
-      } finally {
-        client.release();
+      // Ensure resume exists and belongs to user
+      const resumeQ = await supabase.from('resumes').select('id,user_id').eq('id', resumeId).single();
+      if (resumeQ.error || !resumeQ.data) {
+        console.error('Resume fetch failed', resumeQ.error);
+        return res.status(404).json({ error: 'Resume not found' });
       }
+      if (resumeQ.data.user_id !== user.id) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const insert = await supabase.from('resume_analyses').insert([{ resume_id: resumeId, analysis }]).select('id');
+      if (insert.error) {
+        console.error('Analysis insert failed', insert.error);
+        return res.status(500).json({ error: 'Failed to save analysis' });
+      }
+
+      const update = await supabase.from('resumes').update({ status: 'analyzed' }).eq('id', resumeId);
+      if (update.error) {
+        console.error('Resume status update failed', update.error);
+        // not fatal; continue
+      }
+
+      const analysisId = insert.data?.[0]?.id ?? null;
+      res.json({ resumeId, analysisId, analysis });
     } catch (err: any) {
       console.error('DB error', err);
       return res.status(500).json({ error: 'Database error' });
