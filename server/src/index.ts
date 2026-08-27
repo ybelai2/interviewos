@@ -8,11 +8,12 @@ import fs from 'fs/promises';
 import { extractTextFromPdf, extractTextFromDocx } from './extract';
 import { analyzeResumeWithAI } from './ai';
 import { insertResume, insertAnalysis, getAnalysisByResumeId } from './db';
+import { uploadFileToStorage } from './storage';
 
 dotenv.config();
 
 const PORT = Number(process.env.SERVER_PORT || 4000);
-const uploadDir = path.join(process.cwd(), 'server', 'uploads');
+const uploadDir = path.join(process.cwd(), 'server', 'tmp_uploads');
 
 const storage = multer.diskStorage({
   destination: function (_req, _file, cb) {
@@ -67,26 +68,57 @@ app.post('/upload-resume', upload.single('file'), async (req, res) => {
 
     if (!text || text.trim().length < 10) {
       await fs.unlink(req.file.path).catch(() => {});
-      return res.status(400).json({ error: 'Could not extract text from resume' });
+      return res.status(400).json({ error: 'Could not extract text from resume; scanned PDF or unsupported format' });
     }
 
-    // Store minimal resume record in DB (storage_path is temporary file path until you configure Supabase storage)
-    const userId = (req.body.userId as string) || 'local-user';
+    // Upload file to permanent storage (Supabase Storage) or fail in production
+    const destFilename = `${Date.now()}-${req.file.originalname}`;
+    let storagePath: string;
+    try {
+      storagePath = await uploadFileToStorage(req.file.path, destFilename);
+    } catch (err: any) {
+      console.error('storage upload failed', err?.message || err);
+      await fs.unlink(req.file.path).catch(() => {});
+      return res.status(500).json({ error: 'Failed to store resume. Please try again later.' });
+    }
+
+    // Ensure user_id present and is a UUID. We expect the client to pass the supabase auth uid.
+    const userId = (req.body.userId as string) || null;
+    if (!userId) {
+      // For security, do not default to a placeholder in production
+      if (process.env.NODE_ENV === 'production') {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+    }
+
+    // Persist resume row
     const resumeId = await insertResume({
       user_id: userId,
       filename: req.file.originalname,
-      storage_path: req.file.path,
+      storage_path: storagePath,
       text_excerpt: text.slice(0, 1024),
     });
 
-    // Call AI to analyze resume (server-side only)
-    const analysis = await analyzeResumeWithAI(text);
+    // Call AI to analyze resume
+    let analysis;
+    try {
+      analysis = await analyzeResumeWithAI(text);
+    } catch (err: any) {
+      console.error('AI analysis failed', err?.message || err);
+      // Do not persist an empty or invalid analysis; return error to caller
+      return res.status(502).json({ error: 'AI analysis failed: ' + (err?.message || 'unknown') });
+    }
 
     // Persist analysis
-    await insertAnalysis({ resume_id: resumeId, analysis });
-
-    // cleanup temporary file
-    await fs.unlink(req.file.path).catch(() => {});
+    try {
+      await insertAnalysis({ resume_id: resumeId, analysis });
+    } catch (err: any) {
+      console.error('Persisting analysis failed', err?.message || err);
+      return res.status(500).json({ error: 'Failed to save analysis' });
+    } finally {
+      // Remove temp file
+      await fs.unlink(req.file.path).catch(() => {});
+    }
 
     return res.json({ resumeId, analysis });
   } catch (err) {
