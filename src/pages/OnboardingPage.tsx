@@ -1,4 +1,4 @@
-import { useState, useCallback, type DragEvent } from 'react';
+import { useState, useCallback, type DragEvent, useRef } from 'react';
 import { UploadCloud, FileText, X, ArrowRight } from 'lucide-react';
 import { Link, useRouter } from '@/router';
 import { Button } from '@/components/ui/Button';
@@ -23,6 +23,7 @@ export function OnboardingPage() {
   const [fileName, setFileName] = useState('');
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { currentStep, isDone } = useAnimatedSteps(
     analysisSteps.map((s) => s.label),
@@ -37,8 +38,15 @@ export function OnboardingPage() {
       const parsed = stored ? JSON.parse(stored) : null;
 
       // Attempt to grab a real token, fallback to the mock ID for local testing
-      const token = parsed?.accessToken || parsed?.token || parsed?.supabaseToken || parsed?.id || 'local-user';
-      console.debug('Derived token for upload:', !!token, token ? token.substring(0, 8) + '...' : null);
+      const token = parsed?.accessToken || parsed?.token || parsed?.supabaseToken || parsed?.id || null;
+      console.debug('Derived token for upload:', !!token, token ? String(token).substring(0, 8) + '...' : null);
+
+      if (!token) {
+        // If no token, provide a clear user-friendly message and allow mock flow in dev
+        alert('No authenticated session found. Please sign in before uploading your resume.');
+        setPhase('upload');
+        return;
+      }
 
       const res = await resumeService.uploadResume(file, token, (p) => setUploadProgress(p));
 
@@ -51,7 +59,7 @@ export function OnboardingPage() {
       // Provide a user-friendly error modal or message
       const message = err?.error || err?.message || 'Upload failed';
       // If backend is not configured, give explicit instructions
-      if (message.includes('Backend not configured') || message.includes('OPENAI_API_KEY not configured') || message.includes('Database not configured')) {
+      if (String(message).includes('Backend not configured') || String(message).includes('OPENAI_API_KEY not configured') || String(message).includes('Database not configured')) {
         alert(message + '\n\nThe application backend is not fully configured. Please check your environment variables or contact the site administrator.');
       } else {
         alert(message);
@@ -69,6 +77,10 @@ export function OnboardingPage() {
     setDragging(false);
     const file = e.dataTransfer.files?.[0];
     if (file) handleFile(file);
+  };
+
+  const handleBrowseClick = () => {
+    fileInputRef.current?.click();
   };
 
   return (
@@ -112,20 +124,27 @@ export function OnboardingPage() {
                   </div>
                   <p className="text-sm font-medium text-ink mb-1">Drop your resume here</p>
                   <p className="text-xs text-ink-subtle mb-4">or</p>
-                  <label className="inline-block">
-                    <input
-                      type="file"
-                      accept=".pdf,.docx"
-                      className="hidden"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) handleFile(f);
-                      }}
-                    />
-                    <Button variant="outline" size="sm" asChild>
-                      <span>Browse Files</span>
+
+                  {/* Hidden file input triggered programmatically for reliability */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,.docx"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) handleFile(f);
+                      // reset input so same file can be picked again
+                      if (e.target) (e.target as HTMLInputElement).value = '';
+                    }}
+                    data-testid="resume-input"
+                  />
+
+                  <div>
+                    <Button variant="outline" size="sm" onClick={handleBrowseClick}>
+                      Browse Files
                     </Button>
-                  </label>
+                  </div>
                 </div>
 
                 <p className="text-xs text-ink-subtle mt-4 text-center">
